@@ -1,16 +1,26 @@
-import { pickAction, scoreRound, STRATEGY_COLORS, STRATEGY_ORDER } from './strategies';
+import {
+  buildAnalysis,
+  narrateEncounter,
+  narrateGameEnd,
+  narrateGameStart,
+  narrateHighlight,
+} from '../narration/announcer';
+import { ECONOMIES } from '../config/defaults';
+import { pickAction, scoreRound, STRATEGY_COLORS } from './strategies';
 import type {
   Action,
   AgentMode,
   AgentSnapshot,
+  Chapter,
   EncounterSnapshot,
+  EndGameSummary,
   EventEntry,
+  GameConfig,
+  NarrationEntry,
+  ReplayFrame,
   SimulationSnapshot,
-  StrategyKey,
 } from './types';
 
-const WORLD_WIDTH = 2200;
-const WORLD_HEIGHT = 1400;
 const VIEWPORT_WIDTH = 980;
 const VIEWPORT_HEIGHT = 720;
 const ENCOUNTER_DISTANCE = 82;
@@ -20,6 +30,12 @@ const BUBBLE_SECONDS = 0.72;
 const COOLDOWN_SECONDS = 0.24;
 const SEPARATION_DISTANCE = 54;
 const PATH_MARGIN = 110;
+const FRAME_INTERVAL = 0.35;
+const ACCEL = 7.5;
+
+export type SimulationOptions = {
+  lite?: boolean;
+};
 
 type AgentState = AgentSnapshot & {
   speed: number;
@@ -47,13 +63,6 @@ function mulberry32(seed: number) {
   };
 }
 
-function makeTarget(random: () => number) {
-  return {
-    x: PATH_MARGIN + random() * (WORLD_WIDTH - PATH_MARGIN * 2),
-    y: PATH_MARGIN + random() * (WORLD_HEIGHT - PATH_MARGIN * 2),
-  };
-}
-
 function facingFromVelocity(vx: number, vy: number): AgentSnapshot['facing'] {
   if (Math.abs(vx) > Math.abs(vy)) {
     return vx >= 0 ? 'right' : 'left';
@@ -61,22 +70,53 @@ function facingFromVelocity(vx: number, vy: number): AgentSnapshot['facing'] {
   return vy >= 0 ? 'down' : 'up';
 }
 
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function isHighlight(pointsA: number, pointsB: number, actionA: Action, actionB: Action): boolean {
+  return Math.abs(pointsA - pointsB) >= 4 || (actionA === 'C' && actionB === 'C') || (actionA === 'D' && actionB === 'D');
+}
+
 export class BrowserSimulation {
   private readonly random: () => number;
   private readonly agents: AgentState[];
+  private readonly config: GameConfig;
+  private readonly worldWidth: number;
+  private readonly worldHeight: number;
   private readonly events: EventEntry[] = [];
   private readonly encounters = new Map<string, EncounterState>();
+  private readonly replayFrames: ReplayFrame[] = [];
+  private readonly chapters: Chapter[] = [];
+  private readonly narrations: NarrationEntry[] = [];
   private elapsed = 0;
   private eventId = 0;
   private encounterId = 0;
+  private encounterCount = 0;
+  private narrationId = 0;
+  private frameTimer = 0;
+  private finished = false;
+  private finishReason: SimulationSnapshot['finishReason'] = null;
+  private readonly recordReplay: boolean;
+  private readonly recordNarration: boolean;
+  private readonly recordChapters: boolean;
 
-  constructor(strategyKeys: StrategyKey[] = STRATEGY_ORDER, seed = 7) {
-    this.random = mulberry32(seed);
-    this.agents = strategyKeys.map((name, index) => {
-      const angle = (Math.PI * 2 * index) / strategyKeys.length;
-      const centerX = WORLD_WIDTH / 2 + Math.cos(angle) * 290;
-      const centerY = WORLD_HEIGHT / 2 + Math.sin(angle) * 210;
-      const target = makeTarget(this.random);
+  constructor(config: GameConfig, options: SimulationOptions = {}) {
+    const lite = options.lite ?? false;
+    this.recordReplay = !lite;
+    this.recordNarration = !lite;
+    this.recordChapters = !lite;
+    this.config = config;
+    this.random = mulberry32(config.seed);
+    const isIndoor = config.assetTheme !== 'outdoor_meadow';
+    this.worldWidth = isIndoor ? 1600 : 2200;
+    this.worldHeight = isIndoor ? 1000 : 1400;
+
+    this.agents = config.strategies.map((name, index) => {
+      const angle = (Math.PI * 2 * index) / config.strategies.length;
+      const centerX = this.worldWidth / 2 + Math.cos(angle) * (isIndoor ? 220 : 290);
+      const centerY = this.worldHeight / 2 + Math.sin(angle) * (isIndoor ? 160 : 210);
+      const target = this.makeTarget();
       return {
         id: `agent-${index}`,
         name,
@@ -100,19 +140,112 @@ export class BrowserSimulation {
         historyOther: new Map(),
       };
     });
+
+    if (this.recordNarration) {
+      this.pushNarration(narrateGameStart(config), 0, 'highlight');
+    }
+    if (this.recordReplay) {
+      this.recordFrame();
+    }
+  }
+
+  getConfig() {
+    return this.config;
   }
 
   getWorldSize() {
-    return { width: WORLD_WIDTH, height: WORLD_HEIGHT, viewportWidth: VIEWPORT_WIDTH, viewportHeight: VIEWPORT_HEIGHT };
+    return {
+      width: this.worldWidth,
+      height: this.worldHeight,
+      viewportWidth: VIEWPORT_WIDTH,
+      viewportHeight: VIEWPORT_HEIGHT,
+    };
+  }
+
+  getReplayFrames() {
+    return this.replayFrames;
+  }
+
+  getChapters() {
+    return this.chapters;
+  }
+
+  getNarrations() {
+    return this.narrations;
+  }
+
+  getAllEvents() {
+    return this.events;
+  }
+
+  isFinished() {
+    return this.finished;
   }
 
   step(dt: number) {
+    if (this.finished) {
+      return this.snapshot();
+    }
+
     const scaledDt = dt;
     this.elapsed += scaledDt;
+    this.frameTimer += scaledDt;
     this.updateEncounters(scaledDt);
     this.updateAgents(scaledDt);
     this.seekEncounters();
+
+    if (this.frameTimer >= FRAME_INTERVAL) {
+      this.frameTimer = 0;
+      if (this.recordReplay) {
+        this.recordFrame();
+      }
+    }
+
+    this.checkFinish();
     return this.snapshot();
+  }
+
+  fastForwardToEnd(options: { stepSize?: number } = {}) {
+    const stepSize = options.stepSize ?? 0.05;
+    let guard = 0;
+    while (!this.finished && guard < 20000) {
+      this.step(stepSize);
+      guard += 1;
+    }
+    if (this.recordReplay) {
+      this.recordFrame();
+    }
+    return this.snapshot();
+  }
+
+  buildSummary(): EndGameSummary {
+    const standings = this.snapshot().standings;
+    const highlights = this.events.filter((event) => event.highlight);
+    const winner = standings[0]?.score > (standings[1]?.score ?? -1) ? standings[0].name : null;
+    const analysis = buildAnalysis(this.config, standings, highlights);
+
+    if (!this.finished) {
+      this.finished = true;
+      this.finishReason = 'manual';
+      if (this.recordNarration) {
+        this.pushNarration(narrateGameEnd(winner, this.encounterCount, this.elapsed), this.elapsed, 'highlight');
+      }
+      if (this.recordReplay) {
+        this.recordFrame();
+      }
+    }
+
+    return {
+      config: this.config,
+      winner,
+      standings,
+      totalEncounters: this.encounterCount,
+      elapsed: this.elapsed,
+      highlights,
+      hypothesis: this.config.hypothesis,
+      analysis,
+      chapters: this.chapters,
+    };
   }
 
   snapshot(): SimulationSnapshot {
@@ -122,9 +255,63 @@ export class BrowserSimulation {
       standings: [...this.agents]
         .sort((a, b) => b.score - a.score)
         .map((agent) => ({ name: agent.name, score: agent.score, color: agent.color })),
-      events: this.events,
+      events: this.events.slice(0, 50),
       activeEncounters: [...this.encounters.values()].map(({ pointsA, pointsB, ...encounter }) => encounter),
+      encounterCount: this.encounterCount,
+      finished: this.finished,
+      finishReason: this.finishReason,
     };
+  }
+
+  private getPayoffs() {
+    return ECONOMIES[this.config.economy].payoffs;
+  }
+
+  private makeTarget() {
+    return {
+      x: PATH_MARGIN + this.random() * (this.worldWidth - PATH_MARGIN * 2),
+      y: PATH_MARGIN + this.random() * (this.worldHeight - PATH_MARGIN * 2),
+    };
+  }
+
+  private recordFrame() {
+    const snap = this.snapshot();
+    this.replayFrames.push({
+      elapsed: snap.elapsed,
+      agents: snap.agents.map((agent) => ({ ...agent })),
+      activeEncounters: snap.activeEncounters.map((encounter) => ({ ...encounter })),
+    });
+  }
+
+  private pushNarration(text: string, timestamp: number, priority: NarrationEntry['priority'] = 'normal') {
+    this.narrations.unshift({
+      id: `nar-${this.narrationId++}`,
+      text,
+      timestamp,
+      priority,
+    });
+    this.narrations.splice(40);
+  }
+
+  private checkFinish() {
+    if (this.finished) return;
+
+    const timeUp =
+      (this.config.mode === 'timed_match' || this.config.mode === 'classic_roam') &&
+      this.elapsed >= this.config.durationSec;
+    const encountersUp = this.encounterCount >= this.config.maxEncounters;
+
+    if (timeUp || encountersUp) {
+      this.finished = true;
+      this.finishReason = encountersUp && this.config.mode === 'encounter_sprint' ? 'encounters' : 'time';
+      const winner = this.snapshot().standings[0]?.name ?? null;
+      if (this.recordNarration) {
+        this.pushNarration(narrateGameEnd(winner, this.encounterCount, this.elapsed), this.elapsed, 'highlight');
+      }
+      if (this.recordReplay) {
+        this.recordFrame();
+      }
+    }
   }
 
   private updateEncounters(dt: number) {
@@ -165,7 +352,7 @@ export class BrowserSimulation {
       const dy = agent.targetY - agent.y;
       const distance = Math.hypot(dx, dy);
       if (distance < 24) {
-        const target = makeTarget(this.random);
+        const target = this.makeTarget();
         agent.targetX = target.x;
         agent.targetY = target.y;
       }
@@ -173,11 +360,14 @@ export class BrowserSimulation {
       const directionX = distance > 0 ? dx / Math.max(distance, 1) : 0;
       const directionY = distance > 0 ? dy / Math.max(distance, 1) : 0;
       const repel = this.computeRepel(agent);
-      agent.vx = (directionX + repel.x * 1.35) * agent.speed;
-      agent.vy = (directionY + repel.y * 1.35) * agent.speed;
+      const targetVx = (directionX + repel.x * 1.35) * agent.speed;
+      const targetVy = (directionY + repel.y * 1.35) * agent.speed;
+      const blend = Math.min(1, dt * ACCEL);
+      agent.vx = lerp(agent.vx, targetVx, blend);
+      agent.vy = lerp(agent.vy, targetVy, blend);
 
-      agent.x = clamp(agent.x + agent.vx * dt, PATH_MARGIN, WORLD_WIDTH - PATH_MARGIN);
-      agent.y = clamp(agent.y + agent.vy * dt, PATH_MARGIN, WORLD_HEIGHT - PATH_MARGIN);
+      agent.x = clamp(agent.x + agent.vx * dt, PATH_MARGIN, this.worldWidth - PATH_MARGIN);
+      agent.y = clamp(agent.y + agent.vy * dt, PATH_MARGIN, this.worldHeight - PATH_MARGIN);
       agent.facing = facingFromVelocity(agent.vx, agent.vy);
     }
   }
@@ -214,13 +404,14 @@ export class BrowserSimulation {
 
   private startEncounter(agentA: AgentState, agentB: AgentState) {
     if (agentA.encounterId || agentB.encounterId) return;
+    const payoffs = this.getPayoffs();
     const selfHistoryA = agentA.historySelf.get(agentB.id) ?? [];
     const otherHistoryA = agentA.historyOther.get(agentB.id) ?? [];
     const selfHistoryB = agentB.historySelf.get(agentA.id) ?? [];
     const otherHistoryB = agentB.historyOther.get(agentA.id) ?? [];
 
-    const actionA = pickAction(agentA.name, otherHistoryA, selfHistoryA, this.random);
-    const actionB = pickAction(agentB.name, otherHistoryB, selfHistoryB, this.random);
+    const actionA = pickAction(agentA.name, otherHistoryA, selfHistoryA, this.random, payoffs);
+    const actionB = pickAction(agentB.name, otherHistoryB, selfHistoryB, this.random, payoffs);
     selfHistoryA.push(actionA);
     otherHistoryA.push(actionB);
     selfHistoryB.push(actionB);
@@ -230,7 +421,7 @@ export class BrowserSimulation {
     agentB.historySelf.set(agentA.id, selfHistoryB);
     agentB.historyOther.set(agentA.id, otherHistoryB);
 
-    const [pointsA, pointsB] = scoreRound(actionA, actionB);
+    const [pointsA, pointsB] = scoreRound(actionA, actionB, payoffs);
     agentA.score += pointsA;
     agentB.score += pointsB;
     agentA.lastAction = actionA;
@@ -263,9 +454,48 @@ export class BrowserSimulation {
       pointsB,
     });
 
+    this.encounterCount += 1;
+    const highlight = isHighlight(pointsA, pointsB, actionA, actionB);
     const text = `${agentA.name} ${actionA} (${pointsA}) vs ${agentB.name} ${actionB} (${pointsB})`;
-    this.events.unshift({ id: `evt-${this.eventId++}`, text, timestamp: this.elapsed });
-    this.events.splice(12);
+    const event: EventEntry = {
+      id: `evt-${this.eventId++}`,
+      text,
+      timestamp: this.elapsed,
+      encounterIndex: this.encounterCount,
+      agentA: agentA.name,
+      agentB: agentB.name,
+      actionA,
+      actionB,
+      pointsA,
+      pointsB,
+      highlight,
+    };
+    this.events.unshift(event);
+
+    const narration = narrateEncounter(agentA.name, agentB.name, actionA, actionB, pointsA, pointsB);
+    if (this.recordNarration) {
+      this.pushNarration(narration, this.elapsed, highlight ? 'highlight' : 'normal');
+      if (highlight) {
+        this.pushNarration(narrateHighlight(event), this.elapsed, 'highlight');
+      }
+    }
+
+    const frameIndex = this.replayFrames.length;
+    if (this.recordReplay) {
+      this.recordFrame();
+    }
+    if (this.recordChapters) {
+      this.chapters.unshift({
+        id: `ch-${this.encounterCount}`,
+        index: this.encounterCount,
+        title: `Encounter ${this.encounterCount}`,
+        timestamp: this.elapsed,
+        encounterId: id,
+        highlight,
+        summary: text,
+        replayFrameIndex: frameIndex,
+      });
+    }
   }
 
   private endEncounter(id: string, agentA: AgentState, agentB: AgentState) {
@@ -276,8 +506,8 @@ export class BrowserSimulation {
     agentB.mode = 'cooldown';
     agentA.cooldown = COOLDOWN_SECONDS;
     agentB.cooldown = COOLDOWN_SECONDS;
-    const targetA = makeTarget(this.random);
-    const targetB = makeTarget(this.random);
+    const targetA = this.makeTarget();
+    const targetB = this.makeTarget();
     agentA.targetX = targetA.x;
     agentA.targetY = targetA.y;
     agentB.targetX = targetB.x;
@@ -287,4 +517,9 @@ export class BrowserSimulation {
   private agentById(id: string) {
     return this.agents.find((agent) => agent.id === id);
   }
+}
+
+export function buildEngine(config: GameConfig, options: SimulationOptions = {}) {
+  const engine = new BrowserSimulation(config, options);
+  return { engine, snapshot: engine.snapshot() };
 }
