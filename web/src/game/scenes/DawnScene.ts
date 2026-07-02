@@ -1,24 +1,45 @@
 import Phaser from 'phaser';
 
+import {
+  facingToDirection,
+  registerAgentSpriteSheets,
+  registerPropSprites,
+  spriteKeyForStrategy,
+} from '../assets/generateSprites';
+import { expSmoothing, lerpAgentSnapshots } from '../motion';
 import { getActiveReplayFrame, useSimulationStore } from '../../state/useSimulationStore';
 import type { Action, AgentSnapshot, AssetThemeId } from '../../simulation/types';
 
 const VIEW_WIDTH = 980;
 const VIEW_HEIGHT = 720;
 
+type AgentVisual = {
+  sprite: Phaser.GameObjects.Sprite;
+  label: Phaser.GameObjects.Text;
+  displayX: number;
+  displayY: number;
+  lastDirection: AgentSnapshot['facing'];
+};
+
 export class DawnScene extends Phaser.Scene {
-  private readonly agentSprites = new Map<string, Phaser.GameObjects.Container>();
-  private readonly agentBodies = new Map<string, Phaser.GameObjects.Rectangle>();
-  private readonly agentLabels = new Map<string, Phaser.GameObjects.Text>();
+  private readonly agentVisuals = new Map<string, AgentVisual>();
   private readonly encounterBubbles = new Map<string, Phaser.GameObjects.Container>();
   private worldLayer: Phaser.GameObjects.Container | null = null;
   private currentTheme: AssetThemeId | null = null;
   private isDragging = false;
   private dragStart = { x: 0, y: 0 };
   private cameraStart = { x: 0, y: 0 };
+  private cameraX = VIEW_WIDTH / 2;
+  private cameraY = VIEW_HEIGHT / 2;
+  private uiSyncTimer = 0;
 
   constructor() {
     super('dawn');
+  }
+
+  preload() {
+    registerAgentSpriteSheets(this);
+    registerPropSprites(this);
   }
 
   create() {
@@ -27,33 +48,64 @@ export class DawnScene extends Phaser.Scene {
   }
 
   update(_time: number, delta: number) {
+    const dt = delta / 1000;
     const store = useSimulationStore.getState();
     const theme = store.config.assetTheme;
     if (theme !== this.currentTheme) {
+      this.clearAgents();
       this.refreshWorld();
     }
 
+    let agents = store.snapshot.agents;
     const replayFrame = getActiveReplayFrame(store);
+
     if (replayFrame) {
-      store.stepReplay(delta / 1000);
-      this.renderFrame(replayFrame.agents);
+      store.stepReplay(dt);
+      const nextStore = useSimulationStore.getState();
+      const current = getActiveReplayFrame(nextStore) ?? replayFrame;
+      const nextIndex = Math.min(nextStore.replayIndex + 1, nextStore.replayFrames.length - 1);
+      const nextFrame = nextStore.replayFrames[nextIndex];
+      if (nextFrame && nextIndex !== nextStore.replayIndex) {
+        const alpha = nextStore.replayPlaying ? Math.min(1, dt * 8) : 1;
+        agents = current.agents.map((agent, index) => {
+          const peer = nextFrame.agents[index];
+          return peer ? lerpAgentSnapshots(agent, peer, alpha) : agent;
+        });
+      } else {
+        agents = current.agents;
+      }
     } else if (store.phase === 'running' && store.viewMode === 'live') {
-      store.step(delta / 1000);
-      const snapshot = useSimulationStore.getState().snapshot;
-      this.renderFrame(snapshot.agents);
-    } else {
-      this.renderFrame(store.snapshot.agents);
+      store.step(dt);
+      agents = useSimulationStore.getState().snapshot.agents;
+      this.uiSyncTimer += dt;
+      if (this.uiSyncTimer >= 0.12) {
+        this.uiSyncTimer = 0;
+        useSimulationStore.getState().syncUiFromEngine();
+      }
     }
 
-    this.applyCamera(store.snapshot.agents);
+    this.renderAgents(agents, dt);
+    this.applyCamera(agents, dt);
     this.cameras.main.setZoom(store.zoom);
+  }
+
+  private clearAgents() {
+    for (const visual of this.agentVisuals.values()) {
+      visual.sprite.destroy();
+      visual.label.destroy();
+    }
+    this.agentVisuals.clear();
+    for (const bubble of this.encounterBubbles.values()) {
+      bubble.destroy();
+    }
+    this.encounterBubbles.clear();
   }
 
   private setupInput() {
     this.input.on('wheel', (_pointer: Phaser.Input.Pointer, _gameObjects: unknown[], _deltaX: number, deltaY: number) => {
-      const store = useSimulationStore.getState();
-      if (deltaY > 0) store.zoomOut();
-      else store.zoomIn();
+      const s = useSimulationStore.getState();
+      if (deltaY > 0) s.zoomOut();
+      else s.zoomIn();
     });
 
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
@@ -85,6 +137,8 @@ export class DawnScene extends Phaser.Scene {
 
     this.cameras.main.setBounds(0, 0, width, height);
     this.cameras.main.setViewport(0, 0, VIEW_WIDTH, VIEW_HEIGHT);
+    this.cameraX = width / 2;
+    this.cameraY = height / 2;
 
     if (theme === 'outdoor_meadow') {
       this.drawOutdoorMeadow(width, height);
@@ -120,8 +174,10 @@ export class DawnScene extends Phaser.Scene {
     for (let index = 0; index < 26; index += 1) {
       const trunkX = 120 + ((index * 211) % 420);
       const trunkY = 140 + ((index * 157) % (height - 240));
-      this.drawTree(trunkX, trunkY);
-      this.drawTree(width - trunkX, Math.max(100, trunkY - 40));
+      this.worldLayer?.add(this.add.sprite(trunkX, trunkY, 'prop-tree').setOrigin(0.5, 0.85).setScale(2));
+      this.worldLayer?.add(
+        this.add.sprite(width - trunkX, Math.max(100, trunkY - 40), 'prop-tree').setOrigin(0.5, 0.85).setScale(2),
+      );
     }
 
     this.worldLayer?.add(graphics);
@@ -146,21 +202,20 @@ export class DawnScene extends Phaser.Scene {
     walls.fillRect(40, height - 64, width - 80, 24);
     walls.fillRect(40, 40, 24, height - 80);
     walls.fillRect(width - 64, 40, 24, height - 80);
-
     walls.fillStyle(0x4fd1c5, 0.35);
     walls.fillRect(80, 52, width - 160, 6);
 
-    this.drawDesk(180, 180, 0x5b6b7c);
-    this.drawDesk(width - 280, 180, 0x5b6b7c);
-    this.drawDesk(180, height - 240, 0x5b6b7c);
-    this.drawDesk(width - 280, height - 240, 0x5b6b7c);
-    this.drawMonitor(width / 2 - 120, 120);
-    this.drawMonitor(width / 2 + 40, 120);
-    this.drawCouch(width / 2, height / 2 + 40);
+    this.add.sprite(180, 210, 'prop-desk').setOrigin(0.5, 0.75).setScale(2);
+    this.add.sprite(width - 280, 210, 'prop-desk').setOrigin(0.5, 0.75).setScale(2);
+    this.add.sprite(180, height - 210, 'prop-desk').setOrigin(0.5, 0.75).setScale(2);
+    this.add.sprite(width - 280, height - 210, 'prop-desk').setOrigin(0.5, 0.75).setScale(2);
+    this.add.sprite(width / 2 - 120, 150, 'prop-monitor').setOrigin(0.5, 0.85).setScale(2);
+    this.add.sprite(width / 2 + 40, 150, 'prop-monitor').setOrigin(0.5, 0.85).setScale(2);
+    this.add.sprite(width / 2, height / 2 + 60, 'prop-couch').setOrigin(0.5, 0.75).setScale(2);
 
     const label = this.add
       .text(width / 2, 78, 'OBSERVATION ROOM — RESEARCH SANDBOX', {
-        fontFamily: 'Inter, system-ui, sans-serif',
+        fontFamily: 'monospace',
         fontSize: '14px',
         color: '#9ae6d8',
       })
@@ -188,11 +243,11 @@ export class DawnScene extends Phaser.Scene {
     neon.lineStyle(2, 0x4fd1ff, 0.7);
     neon.strokeRect(72, 72, width - 144, height - 144);
 
-    this.drawArcadeCabinet(200, 200, 0xff6bcb);
-    this.drawArcadeCabinet(width - 260, 200, 0x6bcfff);
-    this.drawArcadeCabinet(200, height - 280, 0xffd166);
-    this.drawArcadeCabinet(width - 260, height - 280, 0x9bf6ff);
-    this.drawPixelSofa(width / 2, height / 2);
+    this.worldLayer?.add(this.add.sprite(200, 250, 'prop-arcade').setOrigin(0.5, 0.85).setScale(2));
+    this.worldLayer?.add(this.add.sprite(width - 260, 250, 'prop-arcade').setOrigin(0.5, 0.85).setScale(2));
+    this.worldLayer?.add(this.add.sprite(200, height - 230, 'prop-arcade').setOrigin(0.5, 0.85).setScale(2));
+    this.worldLayer?.add(this.add.sprite(width - 260, height - 230, 'prop-arcade').setOrigin(0.5, 0.85).setScale(2));
+    this.worldLayer?.add(this.add.sprite(width / 2, height / 2, 'prop-couch').setOrigin(0.5, 0.75).setScale(2));
 
     const sign = this.add
       .text(width / 2, 96, 'PIXEL LOUNGE', {
@@ -205,126 +260,83 @@ export class DawnScene extends Phaser.Scene {
     this.worldLayer?.add([floor, neon, sign]);
   }
 
-  private drawDesk(x: number, y: number, color: number) {
-    const desk = this.add.container(x, y);
-    const top = this.add.rectangle(0, 0, 140, 70, color);
-    const leg1 = this.add.rectangle(-50, 40, 12, 40, 0x2d3748);
-    const leg2 = this.add.rectangle(50, 40, 12, 40, 0x2d3748);
-    desk.add([top, leg1, leg2]);
-    this.worldLayer?.add(desk);
-  }
-
-  private drawMonitor(x: number, y: number) {
-    const monitor = this.add.container(x, y);
-    const screen = this.add.rectangle(0, 0, 90, 60, 0x0f172a).setStrokeStyle(3, 0x94a3b8);
-    const glow = this.add.rectangle(0, 0, 70, 40, 0x38bdf8, 0.35);
-    const stand = this.add.rectangle(0, 42, 20, 16, 0x64748b);
-    monitor.add([stand, screen, glow]);
-    this.worldLayer?.add(monitor);
-  }
-
-  private drawCouch(x: number, y: number) {
-    const couch = this.add.container(x, y);
-    const base = this.add.rectangle(0, 0, 220, 80, 0x4a5568);
-    const back = this.add.rectangle(0, -36, 220, 40, 0x3d4a5c);
-    const cushion = this.add.rectangle(-60, 8, 60, 50, 0x5a6b7d);
-    const cushion2 = this.add.rectangle(60, 8, 60, 50, 0x5a6b7d);
-    couch.add([base, back, cushion, cushion2]);
-    this.worldLayer?.add(couch);
-  }
-
-  private drawArcadeCabinet(x: number, y: number, accent: number) {
-    const cab = this.add.container(x, y);
-    const body = this.add.rectangle(0, 0, 90, 130, 0x2d1b69).setStrokeStyle(3, accent);
-    const screen = this.add.rectangle(0, -24, 64, 48, 0x0f172a).setStrokeStyle(2, accent);
-    const marquee = this.add.rectangle(0, -70, 72, 14, accent, 0.8);
-    cab.add([body, screen, marquee]);
-    this.worldLayer?.add(cab);
-  }
-
-  private drawPixelSofa(x: number, y: number) {
-    const sofa = this.add.container(x, y);
-    for (let block = -3; block <= 3; block += 1) {
-      const color = block % 2 === 0 ? 0xff6bcb : 0x9bf6ff;
-      const part = this.add.rectangle(block * 28, 0, 24, 48, color);
-      sofa.add(part);
-    }
-    this.worldLayer?.add(sofa);
-  }
-
-  private drawTree(x: number, y: number) {
-    const tree = this.add.container(x, y);
-    const trunk = this.add.rectangle(0, 30, 18, 36, 0x775536);
-    const canopy = this.add.circle(0, 4, 34, 0x80b36a);
-    const canopy2 = this.add.circle(-18, 18, 24, 0x8dc57a);
-    const canopy3 = this.add.circle(18, 18, 24, 0x76a863);
-    tree.add([trunk, canopy, canopy2, canopy3]);
-    this.worldLayer?.add(tree);
-  }
-
-  private renderFrame(agents: AgentSnapshot[]) {
-    this.syncAgents(agents);
-    this.syncBubbles(agents);
-  }
-
-  private syncAgents(agents: AgentSnapshot[]) {
+  private renderAgents(agents: AgentSnapshot[], dt: number) {
     const seen = new Set<string>();
     const pixel = useSimulationStore.getState().config.assetTheme === 'pixel_arcade';
 
     for (const agent of agents) {
       seen.add(agent.id);
-      const sprite = this.ensureAgent(agent, pixel);
-      sprite.setPosition(agent.x, agent.y);
-      this.applyFacing(agent);
-      const label = this.agentLabels.get(agent.id);
-      label?.setPosition(agent.x, agent.y + 34);
-      sprite.setAlpha(agent.mode === 'cooldown' ? 0.72 : 1);
+      const visual = this.ensureAgent(agent, pixel);
+      visual.displayX = expSmoothing(visual.displayX, agent.x, dt, 14);
+      visual.displayY = expSmoothing(visual.displayY, agent.y, dt, 14);
+      visual.sprite.setPosition(visual.displayX, visual.displayY);
+      visual.label.setPosition(visual.displayX, visual.displayY + 28);
+
+      const direction = facingToDirection(agent.facing);
+      const speed = Math.hypot(agent.vx, agent.vy);
+      const sheetKey = spriteKeyForStrategy(agent.name);
+      const walkKey = `${sheetKey}-walk-${direction}`;
+
+      if (agent.mode === 'roaming' && speed > 10) {
+        if (visual.lastDirection !== direction || !visual.sprite.anims.isPlaying) {
+          visual.sprite.play(walkKey, true);
+          visual.lastDirection = direction;
+        }
+      } else {
+        visual.sprite.anims.stop();
+        visual.sprite.setFrame(this.idleFrameForDirection(direction));
+        visual.lastDirection = direction;
+      }
+
+      visual.sprite.setAlpha(agent.mode === 'cooldown' ? 0.72 : 1);
+      visual.sprite.setFlipX(direction === 'left');
     }
 
-    for (const id of [...this.agentSprites.keys()]) {
-      if (seen.has(id)) continue;
-      this.agentSprites.get(id)?.destroy();
-      this.agentSprites.delete(id);
-      this.agentBodies.delete(id);
-      this.agentLabels.get(id)?.destroy();
-      this.agentLabels.delete(id);
-    }
+    this.syncBubbles(agents);
+    this.cleanupAgents(seen);
+  }
+
+  private idleFrameForDirection(direction: AgentSnapshot['facing']): number {
+    if (direction === 'left') return 4;
+    if (direction === 'right') return 8;
+    if (direction === 'up') return 12;
+    return 0;
   }
 
   private ensureAgent(agent: AgentSnapshot, pixel: boolean) {
-    const existing = this.agentSprites.get(agent.id);
-    if (existing) {
-      return existing;
-    }
+    const existing = this.agentVisuals.get(agent.id);
+    if (existing) return existing;
 
-    const color = Number.parseInt(agent.color.slice(1), 16);
-    const body = this.add.rectangle(0, 0, pixel ? 28 : 34, pixel ? 32 : 42, color);
-    body.setStrokeStyle(pixel ? 2 : 4, 0xf8f4de);
-    const eyeLeft = this.add.rectangle(pixel ? -5 : -7, pixel ? -4 : -5, pixel ? 3 : 4, pixel ? 3 : 4, 0x1e1e1e);
-    const eyeRight = this.add.rectangle(pixel ? 5 : 7, pixel ? -4 : -5, pixel ? 3 : 4, pixel ? 3 : 4, 0x1e1e1e);
-    const feetLeft = this.add.rectangle(pixel ? -6 : -7, pixel ? 18 : 24, pixel ? 6 : 8, pixel ? 8 : 10, 0x2d3748);
-    const feetRight = this.add.rectangle(pixel ? 6 : 7, pixel ? 18 : 24, pixel ? 6 : 8, pixel ? 8 : 10, 0x2d3748);
-    const sprite = this.add.container(agent.x, agent.y, [body, eyeLeft, eyeRight, feetLeft, feetRight]);
+    const key = spriteKeyForStrategy(agent.name);
+    const sprite = this.add.sprite(agent.x, agent.y, key, 0).setOrigin(0.5, 0.85).setScale(2);
     const label = this.add
-      .text(agent.x, agent.y + 34, agent.name, {
+      .text(agent.x, agent.y + 28, agent.name, {
         fontFamily: pixel ? 'monospace' : 'Inter, system-ui, sans-serif',
-        fontSize: pixel ? '10px' : '12px',
+        fontSize: pixel ? '10px' : '11px',
         color: agent.color,
         backgroundColor: 'rgba(248,244,222,0.82)',
-        padding: { x: 5, y: 1 },
+        padding: { x: 4, y: 1 },
       })
       .setOrigin(0.5, 0);
 
-    this.agentSprites.set(agent.id, sprite);
-    this.agentBodies.set(agent.id, body);
-    this.agentLabels.set(agent.id, label);
-    return sprite;
+    const visual: AgentVisual = {
+      sprite,
+      label,
+      displayX: agent.x,
+      displayY: agent.y,
+      lastDirection: agent.facing,
+    };
+    this.agentVisuals.set(agent.id, visual);
+    return visual;
   }
 
-  private applyFacing(agent: AgentSnapshot) {
-    const body = this.agentBodies.get(agent.id);
-    if (!body) return;
-    body.rotation = agent.facing === 'left' ? -0.1 : agent.facing === 'right' ? 0.1 : 0;
+  private cleanupAgents(seen: Set<string>) {
+    for (const [id, visual] of this.agentVisuals.entries()) {
+      if (seen.has(id)) continue;
+      visual.sprite.destroy();
+      visual.label.destroy();
+      this.agentVisuals.delete(id);
+    }
   }
 
   private syncBubbles(agents: AgentSnapshot[]) {
@@ -332,8 +344,11 @@ export class DawnScene extends Phaser.Scene {
     for (const agent of agents) {
       if (!agent.lastAction || agent.bubbleTimer <= 0) continue;
       active.add(agent.id);
+      const visual = this.agentVisuals.get(agent.id);
+      const x = visual?.displayX ?? agent.x;
+      const y = visual?.displayY ?? agent.y;
       const bubble = this.ensureBubble(agent.id, agent.lastAction, agent.lastPoints);
-      bubble.setPosition(agent.x, agent.y - 62);
+      bubble.setPosition(x, y - 52);
       bubble.setAlpha(Math.min(1, agent.bubbleTimer * 2));
       const [, actionText, pointsText] = bubble.list as [Phaser.GameObjects.Rectangle, Phaser.GameObjects.Text, Phaser.GameObjects.Text];
       actionText.setText(agent.lastAction);
@@ -354,7 +369,7 @@ export class DawnScene extends Phaser.Scene {
     const box = this.add.rectangle(0, 0, 68, 50, 0xf8f4de, 0.95).setStrokeStyle(2, 0xffffff, 0.9);
     const actionText = this.add
       .text(0, -8, action, {
-        fontFamily: 'Inter, system-ui, sans-serif',
+        fontFamily: 'monospace',
         fontSize: '22px',
         color: '#2f855a',
         fontStyle: '700',
@@ -362,7 +377,7 @@ export class DawnScene extends Phaser.Scene {
       .setOrigin(0.5);
     const pointsText = this.add
       .text(0, 12, `+${points}`, {
-        fontFamily: 'Inter, system-ui, sans-serif',
+        fontFamily: 'monospace',
         fontSize: '12px',
         color: '#52606d',
       })
@@ -372,24 +387,26 @@ export class DawnScene extends Phaser.Scene {
     return bubble;
   }
 
-  private applyCamera(agents: AgentSnapshot[]) {
+  private applyCamera(agents: AgentSnapshot[], dt: number) {
     const { cameraMode } = useSimulationStore.getState();
     const { width, height } = useSimulationStore.getState().engine.getWorldSize();
 
-    if (cameraMode === 'overview') {
-      this.cameras.main.centerOn(width / 2, height / 2);
-      return;
-    }
+    let targetX = width / 2;
+    let targetY = height / 2;
 
     if (cameraMode === 'free') {
       return;
     }
 
-    if (agents.length === 0) return;
-    const interacting = agents.filter((agent) => agent.mode === 'interacting');
-    const focus = interacting.length > 0 ? interacting : agents;
-    const x = focus.reduce((sum, agent) => sum + agent.x, 0) / focus.length;
-    const y = focus.reduce((sum, agent) => sum + agent.y, 0) / focus.length;
-    this.cameras.main.centerOn(x, y);
+    if (cameraMode !== 'overview' && agents.length > 0) {
+      const interacting = agents.filter((agent) => agent.mode === 'interacting');
+      const focus = interacting.length > 0 ? interacting : agents;
+      targetX = focus.reduce((sum, agent) => sum + agent.x, 0) / focus.length;
+      targetY = focus.reduce((sum, agent) => sum + agent.y, 0) / focus.length;
+    }
+
+    this.cameraX = expSmoothing(this.cameraX, targetX, dt, cameraMode === 'overview' ? 6 : 9);
+    this.cameraY = expSmoothing(this.cameraY, targetY, dt, cameraMode === 'overview' ? 6 : 9);
+    this.cameras.main.centerOn(this.cameraX, this.cameraY);
   }
 }

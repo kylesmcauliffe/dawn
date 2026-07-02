@@ -4,6 +4,7 @@ import { AnnouncerOverlay } from './ui/AnnouncerOverlay';
 import { AnnouncerPanel } from './ui/AnnouncerPanel';
 import { ConfigPanel } from './ui/ConfigPanel';
 import { ControlsPanel } from './ui/ControlsPanel';
+import { BatchProgressOverlay } from './ui/BatchProgressOverlay';
 import { EndGameSummaryModal } from './ui/EndGameSummaryModal';
 import { EventFeed } from './ui/EventFeed';
 import { LeaderboardPanel } from './ui/LeaderboardPanel';
@@ -43,6 +44,7 @@ function App() {
         </div>
       </section>
       <EndGameSummaryModal />
+      <BatchProgressOverlay />
     </main>
   );
 }

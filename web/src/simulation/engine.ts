@@ -31,6 +31,11 @@ const COOLDOWN_SECONDS = 0.24;
 const SEPARATION_DISTANCE = 54;
 const PATH_MARGIN = 110;
 const FRAME_INTERVAL = 0.35;
+const ACCEL = 7.5;
+
+export type SimulationOptions = {
+  lite?: boolean;
+};
 
 type AgentState = AgentSnapshot & {
   speed: number;
@@ -65,6 +70,10 @@ function facingFromVelocity(vx: number, vy: number): AgentSnapshot['facing'] {
   return vy >= 0 ? 'down' : 'up';
 }
 
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
 function isHighlight(pointsA: number, pointsB: number, actionA: Action, actionB: Action): boolean {
   return Math.abs(pointsA - pointsB) >= 4 || (actionA === 'C' && actionB === 'C') || (actionA === 'D' && actionB === 'D');
 }
@@ -88,8 +97,15 @@ export class BrowserSimulation {
   private frameTimer = 0;
   private finished = false;
   private finishReason: SimulationSnapshot['finishReason'] = null;
+  private readonly recordReplay: boolean;
+  private readonly recordNarration: boolean;
+  private readonly recordChapters: boolean;
 
-  constructor(config: GameConfig) {
+  constructor(config: GameConfig, options: SimulationOptions = {}) {
+    const lite = options.lite ?? false;
+    this.recordReplay = !lite;
+    this.recordNarration = !lite;
+    this.recordChapters = !lite;
     this.config = config;
     this.random = mulberry32(config.seed);
     const isIndoor = config.assetTheme !== 'outdoor_meadow';
@@ -125,8 +141,12 @@ export class BrowserSimulation {
       };
     });
 
-    this.pushNarration(narrateGameStart(config), 0, 'highlight');
-    this.recordFrame();
+    if (this.recordNarration) {
+      this.pushNarration(narrateGameStart(config), 0, 'highlight');
+    }
+    if (this.recordReplay) {
+      this.recordFrame();
+    }
   }
 
   getConfig() {
@@ -176,20 +196,25 @@ export class BrowserSimulation {
 
     if (this.frameTimer >= FRAME_INTERVAL) {
       this.frameTimer = 0;
-      this.recordFrame();
+      if (this.recordReplay) {
+        this.recordFrame();
+      }
     }
 
     this.checkFinish();
     return this.snapshot();
   }
 
-  fastForwardToEnd() {
+  fastForwardToEnd(options: { stepSize?: number } = {}) {
+    const stepSize = options.stepSize ?? 0.05;
     let guard = 0;
     while (!this.finished && guard < 20000) {
-      this.step(0.05);
+      this.step(stepSize);
       guard += 1;
     }
-    this.recordFrame();
+    if (this.recordReplay) {
+      this.recordFrame();
+    }
     return this.snapshot();
   }
 
@@ -202,8 +227,12 @@ export class BrowserSimulation {
     if (!this.finished) {
       this.finished = true;
       this.finishReason = 'manual';
-      this.pushNarration(narrateGameEnd(winner, this.encounterCount, this.elapsed), this.elapsed, 'highlight');
-      this.recordFrame();
+      if (this.recordNarration) {
+        this.pushNarration(narrateGameEnd(winner, this.encounterCount, this.elapsed), this.elapsed, 'highlight');
+      }
+      if (this.recordReplay) {
+        this.recordFrame();
+      }
     }
 
     return {
@@ -276,8 +305,12 @@ export class BrowserSimulation {
       this.finished = true;
       this.finishReason = encountersUp && this.config.mode === 'encounter_sprint' ? 'encounters' : 'time';
       const winner = this.snapshot().standings[0]?.name ?? null;
-      this.pushNarration(narrateGameEnd(winner, this.encounterCount, this.elapsed), this.elapsed, 'highlight');
-      this.recordFrame();
+      if (this.recordNarration) {
+        this.pushNarration(narrateGameEnd(winner, this.encounterCount, this.elapsed), this.elapsed, 'highlight');
+      }
+      if (this.recordReplay) {
+        this.recordFrame();
+      }
     }
   }
 
@@ -327,8 +360,11 @@ export class BrowserSimulation {
       const directionX = distance > 0 ? dx / Math.max(distance, 1) : 0;
       const directionY = distance > 0 ? dy / Math.max(distance, 1) : 0;
       const repel = this.computeRepel(agent);
-      agent.vx = (directionX + repel.x * 1.35) * agent.speed;
-      agent.vy = (directionY + repel.y * 1.35) * agent.speed;
+      const targetVx = (directionX + repel.x * 1.35) * agent.speed;
+      const targetVy = (directionY + repel.y * 1.35) * agent.speed;
+      const blend = Math.min(1, dt * ACCEL);
+      agent.vx = lerp(agent.vx, targetVx, blend);
+      agent.vy = lerp(agent.vy, targetVy, blend);
 
       agent.x = clamp(agent.x + agent.vx * dt, PATH_MARGIN, this.worldWidth - PATH_MARGIN);
       agent.y = clamp(agent.y + agent.vy * dt, PATH_MARGIN, this.worldHeight - PATH_MARGIN);
@@ -437,23 +473,29 @@ export class BrowserSimulation {
     this.events.unshift(event);
 
     const narration = narrateEncounter(agentA.name, agentB.name, actionA, actionB, pointsA, pointsB);
-    this.pushNarration(narration, this.elapsed, highlight ? 'highlight' : 'normal');
-    if (highlight) {
-      this.pushNarration(narrateHighlight(event), this.elapsed, 'highlight');
+    if (this.recordNarration) {
+      this.pushNarration(narration, this.elapsed, highlight ? 'highlight' : 'normal');
+      if (highlight) {
+        this.pushNarration(narrateHighlight(event), this.elapsed, 'highlight');
+      }
     }
 
     const frameIndex = this.replayFrames.length;
-    this.recordFrame();
-    this.chapters.unshift({
-      id: `ch-${this.encounterCount}`,
-      index: this.encounterCount,
-      title: `Encounter ${this.encounterCount}`,
-      timestamp: this.elapsed,
-      encounterId: id,
-      highlight,
-      summary: text,
-      replayFrameIndex: frameIndex,
-    });
+    if (this.recordReplay) {
+      this.recordFrame();
+    }
+    if (this.recordChapters) {
+      this.chapters.unshift({
+        id: `ch-${this.encounterCount}`,
+        index: this.encounterCount,
+        title: `Encounter ${this.encounterCount}`,
+        timestamp: this.elapsed,
+        encounterId: id,
+        highlight,
+        summary: text,
+        replayFrameIndex: frameIndex,
+      });
+    }
   }
 
   private endEncounter(id: string, agentA: AgentState, agentB: AgentState) {
@@ -477,7 +519,7 @@ export class BrowserSimulation {
   }
 }
 
-export function buildEngine(config: GameConfig) {
-  const engine = new BrowserSimulation(config);
+export function buildEngine(config: GameConfig, options: SimulationOptions = {}) {
+  const engine = new BrowserSimulation(config, options);
   return { engine, snapshot: engine.snapshot() };
 }

@@ -1,20 +1,16 @@
 import { useEffect, useRef } from 'react';
 import Phaser from 'phaser';
 
-import { useSimulationStore } from '../state/useSimulationStore';
 import { DawnScene } from './scenes/DawnScene';
 
 export function GameCanvas() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const gameRef = useRef<Phaser.Game | null>(null);
-  const assetTheme = useSimulationStore((state) => state.config.assetTheme);
 
   useEffect(() => {
     if (!containerRef.current || gameRef.current) {
       return;
     }
-
-    const pixelArt = assetTheme === 'pixel_arcade';
 
     gameRef.current = new Phaser.Game({
       type: Phaser.AUTO,
@@ -23,15 +19,16 @@ export function GameCanvas() {
       parent: containerRef.current,
       backgroundColor: '#9ccf7f',
       scene: [DawnScene],
-      render: { pixelArt, antialias: !pixelArt },
+      render: { pixelArt: true, antialias: false, roundPixels: true },
       scale: { mode: Phaser.Scale.NONE },
+      fps: { target: 60, forceSetTimeOut: false },
     });
 
     return () => {
       gameRef.current?.destroy(true);
       gameRef.current = null;
     };
-  }, [assetTheme]);
+  }, []);
 
   return <div className="game-canvas" ref={containerRef} />;
 }

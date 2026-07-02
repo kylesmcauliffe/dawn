@@ -9,6 +9,7 @@ import {
   pushLeaderboard,
   saveSession,
 } from '../persistence/localStorage';
+import { runBatchGames } from '../simulation/batchRunner';
 import { buildEngine } from '../simulation/engine';
 import type {
   BatchRunResult,
@@ -45,7 +46,10 @@ type SimulationState = {
   savedSessions: SavedSession[];
   leaderboard: LeaderboardEntry[];
   showSummary: boolean;
+  batchRunning: boolean;
+  batchProgress: { current: number; total: number; label: string };
   step: (dt: number) => void;
+  syncUiFromEngine: () => void;
   toggleRunning: () => void;
   setSpeed: (speed: number) => void;
   setConfig: (partial: Partial<GameConfig>) => void;
@@ -55,6 +59,7 @@ type SimulationState = {
   zoomIn: () => void;
   zoomOut: () => void;
   startRun: () => void;
+  cancelBatchRun: () => void;
   endRun: () => void;
   skipToEnd: () => void;
   enterReview: () => void;
@@ -94,6 +99,7 @@ function createLeaderboardEntry(summary: EndGameSummary): LeaderboardEntry {
 
 const initialConfig = DEFAULT_GAME_CONFIG;
 const initial = buildEngine(initialConfig);
+let batchCancelFlag = { cancelled: false };
 
 export const useSimulationStore = create<SimulationState>((set, get) => ({
   engine: initial.engine,
@@ -116,33 +122,41 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
   savedSessions: loadSessions(),
   leaderboard: loadLeaderboard(),
   showSummary: false,
+  batchRunning: false,
+  batchProgress: { current: 0, total: 0, label: '' },
 
-  step: (dt) =>
-    set((state) => {
-      if (state.phase !== 'running' || !state.running || state.viewMode !== 'live') {
-        return state;
-      }
-      const snapshot = state.engine.step(dt * state.speed);
-      if (snapshot.finished) {
-        const summary = state.engine.buildSummary();
-        return {
-          snapshot,
-          phase: 'ended',
-          running: false,
-          summary,
-          showSummary: true,
-          replayFrames: state.engine.getReplayFrames(),
-          chapters: state.engine.getChapters(),
-          narrations: state.engine.getNarrations(),
-        };
-      }
-      return {
+  step: (dt) => {
+    const state = get();
+    if (state.phase !== 'running' || !state.running || state.viewMode !== 'live') {
+      return;
+    }
+    const snapshot = state.engine.step(dt * state.speed);
+    if (snapshot.finished) {
+      const summary = state.engine.buildSummary();
+      set({
         snapshot,
+        phase: 'ended',
+        running: false,
+        summary,
+        showSummary: true,
         replayFrames: state.engine.getReplayFrames(),
         chapters: state.engine.getChapters(),
         narrations: state.engine.getNarrations(),
-      };
-    }),
+      });
+      return;
+    }
+    set({ snapshot });
+  },
+
+  syncUiFromEngine: () => {
+    const state = get();
+    set({
+      snapshot: state.engine.snapshot(),
+      replayFrames: state.engine.getReplayFrames(),
+      chapters: state.engine.getChapters(),
+      narrations: state.engine.getNarrations(),
+    });
+  },
 
   toggleRunning: () => {
     const state = get();
@@ -206,6 +220,7 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
         showSummary: false,
         batchResults: [],
         batchComparison: '',
+        batchRunning: false,
         replayFrames: built.engine.getReplayFrames(),
         chapters: built.engine.getChapters(),
         narrations: built.engine.getNarrations(),
@@ -213,41 +228,54 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
       return;
     }
 
-    const batchResults: BatchRunResult[] = [];
-    let lastBuilt = buildEngine(state.config);
-
-    for (let index = 0; index < batchCount; index += 1) {
-      const runConfig = { ...state.config, seed: state.config.seed + index };
-      const built = buildEngine(runConfig);
-      built.engine.fastForwardToEnd();
-      const summary = built.engine.buildSummary();
-      batchResults.push({
-        runIndex: index + 1,
-        seed: runConfig.seed,
-        winner: summary.winner,
-        standings: summary.standings,
-        totalEncounters: summary.totalEncounters,
-        elapsed: summary.elapsed,
-      });
-      lastBuilt = built;
-    }
-
-    const lastSummary = lastBuilt.engine.buildSummary();
+    batchCancelFlag = { cancelled: false };
     set({
-      engine: lastBuilt.engine,
-      snapshot: lastBuilt.engine.snapshot(),
-      phase: 'ended',
+      batchRunning: true,
+      batchProgress: { current: 0, total: batchCount, label: 'Preparing batch run…' },
+      phase: 'setup',
       running: false,
-      viewMode: 'summary',
-      summary: lastSummary,
-      showSummary: true,
-      batchResults,
-      batchComparison: buildBatchComparison(batchResults),
-      replayFrames: lastBuilt.engine.getReplayFrames(),
-      chapters: lastBuilt.engine.getChapters(),
-      narrations: lastBuilt.engine.getNarrations(),
-      replayIndex: lastBuilt.engine.getReplayFrames().length - 1,
     });
+
+    void runBatchGames(state.config, batchCount, {
+      signal: batchCancelFlag,
+      onProgress: (current, total) => {
+        set({
+          batchProgress: {
+            current,
+            total,
+            label: `Simulating game ${current} of ${total} (fast-forward)`,
+          },
+        });
+      },
+    }).then((output) => {
+      if (batchCancelFlag.cancelled) {
+        set({ batchRunning: false, batchProgress: { current: 0, total: 0, label: '' } });
+        return;
+      }
+
+      set({
+        engine: output.lastEngine,
+        snapshot: output.lastEngine.snapshot(),
+        phase: 'ended',
+        running: false,
+        viewMode: 'summary',
+        summary: output.lastSummary,
+        showSummary: true,
+        batchResults: output.results,
+        batchComparison: buildBatchComparison(output.results),
+        replayFrames: output.lastEngine.getReplayFrames(),
+        chapters: output.lastEngine.getChapters(),
+        narrations: output.lastEngine.getNarrations(),
+        replayIndex: Math.max(0, output.lastEngine.getReplayFrames().length - 1),
+        batchRunning: false,
+        batchProgress: { current: batchCount, total: batchCount, label: 'Complete' },
+      });
+    });
+  },
+
+  cancelBatchRun: () => {
+    batchCancelFlag.cancelled = true;
+    set({ batchRunning: false, batchProgress: { current: 0, total: 0, label: '' } });
   },
 
   endRun: () => {
@@ -314,12 +342,12 @@ export const useSimulationStore = create<SimulationState>((set, get) => ({
   stepReplay: (dt) =>
     set((state) => {
       if (!state.replayPlaying || state.replayFrames.length === 0) return state;
-      const advance = Math.max(1, Math.floor(dt * 12));
-      const next = Math.min(state.replayFrames.length - 1, state.replayIndex + advance);
-      if (next === state.replayIndex) {
-        return { replayPlaying: false };
+      const advance = dt * 10;
+      const next = Math.min(state.replayFrames.length - 1, state.replayIndex + Math.max(0.02, advance));
+      if (next >= state.replayFrames.length - 1) {
+        return { replayIndex: state.replayFrames.length - 1, replayPlaying: false };
       }
-      return { replayIndex: next };
+      return { replayIndex: Math.floor(next) };
     }),
 
   dismissSummary: () => set({ showSummary: false }),

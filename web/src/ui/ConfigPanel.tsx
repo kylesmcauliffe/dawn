@@ -5,10 +5,11 @@ import type { GameModeId } from '../simulation/types';
 export function ConfigPanel() {
   const config = useSimulationStore((state) => state.config);
   const phase = useSimulationStore((state) => state.phase);
+  const batchRunning = useSimulationStore((state) => state.batchRunning);
   const setConfig = useSimulationStore((state) => state.setConfig);
   const startRun = useSimulationStore((state) => state.startRun);
 
-  const locked = phase === 'running';
+  const locked = phase === 'running' || batchRunning;
 
   return (
     <section className="panel config-panel">
@@ -139,7 +140,11 @@ export function ConfigPanel() {
 
       <div className="button-row">
         <button className="primary-button" disabled={locked} onClick={startRun} type="button">
-          {config.batchCount > 1 ? `Run ${config.batchCount} games` : 'Start live run'}
+          {batchRunning
+            ? 'Batch running…'
+            : config.batchCount > 1
+              ? `Run ${config.batchCount} games (fast)`
+              : 'Start live run'}
         </button>
         <button
           className="secondary-button"
