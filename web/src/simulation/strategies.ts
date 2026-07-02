@@ -1,4 +1,4 @@
-import type { Action, StrategyKey } from './types';
+import type { Action, PayoffMatrix, StrategyKey } from './types';
 
 export const STRATEGY_ORDER: StrategyKey[] = [
   'TitForTat',
@@ -25,6 +25,7 @@ export function pickAction(
   opponentHistory: Action[],
   selfHistory: Action[],
   random: () => number,
+  payoffs: PayoffMatrix,
 ): Action {
   switch (strategy) {
     case 'AlwaysCooperate':
@@ -41,8 +42,8 @@ export function pickAction(
       }
       const mine = selfHistory.at(-1)!;
       const theirs = opponentHistory.at(-1)!;
-      const payoff = scoreRound(mine, theirs)[0];
-      return payoff >= 3 ? mine : mine === 'C' ? 'D' : 'C';
+      const payoff = scoreRound(mine, theirs, payoffs)[0];
+      return payoff >= payoffs.mutualCoop ? mine : mine === 'C' ? 'D' : 'C';
     }
     case 'GenerousTitForTat': {
       const last = opponentHistory.at(-1);
@@ -61,9 +62,16 @@ export function pickAction(
   }
 }
 
-export function scoreRound(a: Action, b: Action): [number, number] {
-  if (a === 'C' && b === 'C') return [3, 3];
-  if (a === 'C' && b === 'D') return [0, 5];
-  if (a === 'D' && b === 'C') return [5, 0];
-  return [1, 1];
+export function scoreRound(a: Action, b: Action, payoffs: PayoffMatrix = DEFAULT_PAYOFFS): [number, number] {
+  if (a === 'C' && b === 'C') return [payoffs.mutualCoop, payoffs.mutualCoop];
+  if (a === 'C' && b === 'D') return [payoffs.exploited, payoffs.exploit];
+  if (a === 'D' && b === 'C') return [payoffs.exploit, payoffs.exploited];
+  return [payoffs.mutualDefect, payoffs.mutualDefect];
 }
+
+export const DEFAULT_PAYOFFS: PayoffMatrix = {
+  mutualCoop: 3,
+  exploited: 0,
+  exploit: 5,
+  mutualDefect: 1,
+};
