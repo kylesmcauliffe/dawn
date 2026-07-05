@@ -2,14 +2,24 @@
 
 Dawn is a web-first strategy society simulator built with React, Phaser, TypeScript, and Zustand.
 
-Classic prisoner’s dilemma agents roam a shared world, collide, choose to cooperate or defect, and update the standings live in the browser.
+Classic prisoner's dilemma agents roam a Pokémon-style pixel meadow, collide, choose to cooperate or defect, and update the standings live in the browser.
 
 ## Stack
 
 - React + Vite + TypeScript
-- Phaser 3 for the game world
+- Phaser 3 for the tile-based game world
 - Zustand for shared simulation state
 - Netlify for deployment
+
+## Features
+
+- **Mobile-first Game Boy layout** — iPhone 15 full-screen fit (393×852), top game screen + bottom control dashboard
+- **Touch controls** — A (pause), B (record), START, SELECT (speed), 44px tap targets
+- **Strategy tournament** — Tit-for-Tat, Grudger, Pavlov, Always Defect, Always Cooperate, Generous Tit-for-Tat, and Random
+- **Pokémon-style presentation** — Game Boy palette, pixel fonts, tile meadow, chibi walk cycles, RPG dialog boxes
+- **Tab navigation** — Field (watch), Dex (standings + strategy info), Journal (encounter log), Lab (record/replay)
+- **Smooth watch mode** — fixed-timestep simulation, interpolated movement, eased camera on encounters
+- **Record & replay** — capture a run as JSON, download it, and scrub through it later
 
 ## Local development
 
@@ -18,6 +28,17 @@ cd web
 npm install
 npm run dev
 ```
+
+## Controls
+
+| Input | Action |
+|-------|--------|
+| **A** button | Pause / resume |
+| **B** button | Start / stop recording |
+| **START** | Pause / resume |
+| **SELECT** | Cycle speed (0.5× → 3×) |
+| `Space` | Pause / resume (keyboard) |
+| `1`–`4` | Switch menu tabs (keyboard) |
 
 ## Production build
 
@@ -29,3 +50,11 @@ npm run build
 ## Deploy
 
 Netlify is configured via the root `netlify.toml` to build from `web/` and publish `web/dist`.
+
+## Record & replay
+
+1. Open the **Lab** tab and click **Start recording**.
+2. Click **Stop**, then **Download .json** to save the run.
+3. Click **Load replay** to watch with pause, speed control, and scrubbing.
+
+Replay files store agent positions and events at 20 Hz — enough to reconstruct movement and standings for research or teaching demos.

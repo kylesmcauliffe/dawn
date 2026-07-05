@@ -20,6 +20,54 @@ export const STRATEGY_COLORS: Record<StrategyKey, string> = {
   Random: '#C8CDD7',
 };
 
+export const STRATEGY_INFO: Record<
+  StrategyKey,
+  { nickname: string; tagline: string; description: string; type: string }
+> = {
+  TitForTat: {
+    nickname: 'TFT',
+    tagline: 'Mirror, then trust.',
+    type: 'Balanced',
+    description: 'Starts friendly. Copies whatever the opponent did last round.',
+  },
+  Grudger: {
+    nickname: 'GRUDGE',
+    tagline: 'Forgive never.',
+    type: 'Punisher',
+    description: 'Cooperates until betrayed once — then defects forever.',
+  },
+  Pavlov: {
+    nickname: 'PAVLOV',
+    tagline: 'Win, repeat. Lose, switch.',
+    type: 'Adaptive',
+    description: 'Repeats a move if it paid off well; otherwise flips strategy.',
+  },
+  AlwaysDefect: {
+    nickname: 'HAWK',
+    tagline: 'Take the points.',
+    type: 'Aggressive',
+    description: 'Always defects. Maximizes short-term gain against cooperators.',
+  },
+  AlwaysCooperate: {
+    nickname: 'DOVE',
+    tagline: 'Peace everywhere.',
+    type: 'Friendly',
+    description: 'Always cooperates. Thrives in mutual-trust environments.',
+  },
+  GenerousTitForTat: {
+    nickname: 'GTFT',
+    tagline: 'Mostly mirror, sometimes forgive.',
+    type: 'Forgiving',
+    description: 'Like Tit-for-Tat, but occasionally forgives a defection.',
+  },
+  Random: {
+    nickname: 'WILD',
+    tagline: 'Chaos agent.',
+    type: 'Chaotic',
+    description: 'Flips a coin each round. Unpredictable baseline.',
+  },
+};
+
 export function pickAction(
   strategy: StrategyKey,
   opponentHistory: Action[],

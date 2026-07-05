@@ -50,3 +50,17 @@ export interface SimulationSnapshot {
   events: EventEntry[];
   activeEncounters: EncounterSnapshot[];
 }
+
+export interface ReplayFrame {
+  elapsed: number;
+  agents: AgentSnapshot[];
+  events: EventEntry[];
+}
+
+export interface ReplayRecording {
+  version: 1;
+  seed: number;
+  strategies: StrategyKey[];
+  recordedAt: string;
+  frames: ReplayFrame[];
+}
