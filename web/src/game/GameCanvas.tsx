@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import Phaser from 'phaser';
 
-import { DawnScene } from './scenes/DawnScene';
+import { DawnScene, VIEW_HEIGHT, VIEW_WIDTH } from './scenes/DawnScene';
 
 export function GameCanvas() {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -14,13 +14,13 @@ export function GameCanvas() {
 
     gameRef.current = new Phaser.Game({
       type: Phaser.AUTO,
-      width: 980,
-      height: 720,
+      width: VIEW_WIDTH,
+      height: VIEW_HEIGHT,
       parent: containerRef.current,
-      backgroundColor: '#9ccf7f',
+      backgroundColor: '#68ab3c',
       scene: [DawnScene],
       fps: { target: 60, forceSetTimeOut: false },
-      render: { pixelArt: false, antialias: true, roundPixels: false },
+      render: { pixelArt: true, antialias: false, roundPixels: true },
       scale: { mode: Phaser.Scale.NONE },
     });
 
