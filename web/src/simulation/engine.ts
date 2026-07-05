@@ -20,6 +20,8 @@ const BUBBLE_SECONDS = 0.72;
 const COOLDOWN_SECONDS = 0.24;
 const SEPARATION_DISTANCE = 54;
 const PATH_MARGIN = 110;
+const FIXED_DT = 1 / 60;
+const MAX_SUBSTEPS = 5;
 
 type AgentState = AgentSnapshot & {
   speed: number;
@@ -63,14 +65,21 @@ function facingFromVelocity(vx: number, vy: number): AgentSnapshot['facing'] {
 
 export class BrowserSimulation {
   private readonly random: () => number;
+  private readonly seed: number;
+  private readonly strategies: StrategyKey[];
   private readonly agents: AgentState[];
   private readonly events: EventEntry[] = [];
   private readonly encounters = new Map<string, EncounterState>();
   private elapsed = 0;
   private eventId = 0;
   private encounterId = 0;
+  private accumulator = 0;
+  private dirty = true;
+  private cachedSnapshot: SimulationSnapshot | null = null;
 
   constructor(strategyKeys: StrategyKey[] = STRATEGY_ORDER, seed = 7) {
+    this.seed = seed;
+    this.strategies = [...strategyKeys];
     this.random = mulberry32(seed);
     this.agents = strategyKeys.map((name, index) => {
       const angle = (Math.PI * 2 * index) / strategyKeys.length;
@@ -102,21 +111,50 @@ export class BrowserSimulation {
     });
   }
 
+  getSeed() {
+    return this.seed;
+  }
+
+  getStrategies() {
+    return this.strategies;
+  }
+
   getWorldSize() {
     return { width: WORLD_WIDTH, height: WORLD_HEIGHT, viewportWidth: VIEWPORT_WIDTH, viewportHeight: VIEWPORT_HEIGHT };
   }
 
+  consumeDirty() {
+    const wasDirty = this.dirty;
+    this.dirty = false;
+    return wasDirty;
+  }
+
+  isDirty() {
+    return this.dirty;
+  }
+
+  markDirty() {
+    this.dirty = true;
+    this.cachedSnapshot = null;
+  }
+
   step(dt: number) {
-    const scaledDt = dt;
-    this.elapsed += scaledDt;
-    this.updateEncounters(scaledDt);
-    this.updateAgents(scaledDt);
-    this.seekEncounters();
+    this.accumulator += dt;
+    let substeps = 0;
+    while (this.accumulator >= FIXED_DT && substeps < MAX_SUBSTEPS) {
+      this.fixedStep(FIXED_DT);
+      this.accumulator -= FIXED_DT;
+      substeps += 1;
+    }
     return this.snapshot();
   }
 
   snapshot(): SimulationSnapshot {
-    return {
+    if (this.cachedSnapshot && !this.dirty) {
+      return this.cachedSnapshot;
+    }
+
+    this.cachedSnapshot = {
       elapsed: this.elapsed,
       agents: this.agents.map(({ speed, cooldown, encounterId, historySelf, historyOther, ...agent }) => agent),
       standings: [...this.agents]
@@ -125,6 +163,15 @@ export class BrowserSimulation {
       events: this.events,
       activeEncounters: [...this.encounters.values()].map(({ pointsA, pointsB, ...encounter }) => encounter),
     };
+    return this.cachedSnapshot;
+  }
+
+  private fixedStep(dt: number) {
+    this.elapsed += dt;
+    this.updateEncounters(dt);
+    this.updateAgents(dt);
+    this.seekEncounters();
+    this.dirty = true;
   }
 
   private updateEncounters(dt: number) {
