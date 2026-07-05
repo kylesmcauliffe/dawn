@@ -4,7 +4,11 @@ import { STRATEGY_COLORS, STRATEGY_INFO, STRATEGY_ORDER } from '../simulation/st
 import type { StrategyKey } from '../simulation/types';
 import { useSimulationStore } from '../state/useSimulationStore';
 
-export function RankingsPanel() {
+type RankingsPanelProps = {
+  compact?: boolean;
+};
+
+export function RankingsPanel({ compact = false }: RankingsPanelProps) {
   const standings = useSimulationStore((state) => state.snapshot.standings);
   const uiVersion = useSimulationStore((state) => state.uiVersion);
   const [selected, setSelected] = useState<StrategyKey | null>(null);
@@ -13,10 +17,10 @@ export function RankingsPanel() {
   const info = STRATEGY_INFO[active];
 
   return (
-    <section className="rpg-panel" key={uiVersion}>
+    <section className={`rpg-panel ${compact ? 'compact' : ''}`} key={uiVersion}>
       <header className="rpg-panel-head">
         <h2>Strategy Dex</h2>
-        <p>Live tournament standings</p>
+        {!compact ? <p>Live tournament standings</p> : null}
       </header>
 
       <ol className="dex-list">
@@ -41,11 +45,13 @@ export function RankingsPanel() {
           <span className="dex-detail-swatch" style={{ backgroundColor: STRATEGY_COLORS[active] }} />
           <div>
             <h3>{active}</h3>
-            <p>{info.nickname} · {info.type}</p>
+            <p>
+              {info.nickname} · {info.type}
+            </p>
           </div>
         </div>
         <p className="dex-tagline">{info.tagline}</p>
-        <p className="dex-description">{info.description}</p>
+        {!compact ? <p className="dex-description">{info.description}</p> : null}
       </article>
     </section>
   );

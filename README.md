@@ -13,6 +13,8 @@ Classic prisoner's dilemma agents roam a Pokémon-style pixel meadow, collide, c
 
 ## Features
 
+- **Mobile-first Game Boy layout** — iPhone 15 full-screen fit (393×852), top game screen + bottom control dashboard
+- **Touch controls** — A (pause), B (record), START, SELECT (speed), 44px tap targets
 - **Strategy tournament** — Tit-for-Tat, Grudger, Pavlov, Always Defect, Always Cooperate, Generous Tit-for-Tat, and Random
 - **Pokémon-style presentation** — Game Boy palette, pixel fonts, tile meadow, chibi walk cycles, RPG dialog boxes
 - **Tab navigation** — Field (watch), Dex (standings + strategy info), Journal (encounter log), Lab (record/replay)
@@ -29,11 +31,14 @@ npm run dev
 
 ## Controls
 
-| Key | Action |
-|-----|--------|
-| `Space` | Pause / resume |
-| `1`–`4` | Switch menu tabs |
-| `R` | Toggle recording (live mode) |
+| Input | Action |
+|-------|--------|
+| **A** button | Pause / resume |
+| **B** button | Start / stop recording |
+| **START** | Pause / resume |
+| **SELECT** | Cycle speed (0.5× → 3×) |
+| `Space` | Pause / resume (keyboard) |
+| `1`–`4` | Switch menu tabs (keyboard) |
 
 ## Production build
 

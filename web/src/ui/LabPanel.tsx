@@ -2,7 +2,11 @@ import { useRef } from 'react';
 
 import { loadReplayFromFile, useSimulationStore } from '../state/useSimulationStore';
 
-export function LabPanel() {
+type LabPanelProps = {
+  compact?: boolean;
+};
+
+export function LabPanel({ compact = false }: LabPanelProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mode = useSimulationStore((state) => state.mode);
   const recording = useSimulationStore((state) => state.recording);
@@ -19,28 +23,20 @@ export function LabPanel() {
   const replayDuration = replay?.frames.at(-1)?.elapsed ?? 0;
 
   return (
-    <section className="rpg-panel">
+    <section className={`rpg-panel ${compact ? 'compact' : ''}`}>
       <header className="rpg-panel-head">
         <h2>Research Lab</h2>
-        <p>Record runs, replay them, reset the world</p>
+        {!compact ? <p>Record runs, replay them, reset the world</p> : null}
       </header>
 
       <div className="lab-section">
-        <h3>World</h3>
         <div className="lab-actions">
           <button className="rpg-button" disabled={mode === 'replay'} onClick={() => reset()} type="button">
-            New tournament
+            New run
           </button>
-        </div>
-      </div>
-
-      <div className="lab-section">
-        <h3>Recording</h3>
-        <p className="lab-copy">Capture a full run as JSON — share it, replay it, cite it in a paper.</p>
-        <div className="lab-actions">
           {mode === 'live' && !recording ? (
             <button className="rpg-button primary" onClick={startRecording} type="button">
-              ● Start recording
+              ● Record
             </button>
           ) : null}
           {recording ? (
@@ -49,19 +45,18 @@ export function LabPanel() {
                 Stop
               </button>
               <button className="rpg-button" onClick={downloadRecording} type="button">
-                Download .json
+                Save
               </button>
             </>
           ) : null}
           <button className="rpg-button" onClick={() => fileInputRef.current?.click()} type="button">
-            Load replay
+            Load
           </button>
         </div>
       </div>
 
       {mode === 'replay' && replay ? (
         <div className="lab-section">
-          <h3>Replay scrubber</h3>
           <input
             className="replay-scrubber"
             max={replayDuration}
@@ -95,14 +90,22 @@ export function LabPanel() {
         type="file"
       />
 
-      <div className="lab-section lab-tips">
-        <h3>Controls</h3>
-        <ul>
-          <li><kbd>Space</kbd> Pause / resume</li>
-          <li><kbd>1</kbd>–<kbd>4</kbd> Switch menu tabs</li>
-          <li><kbd>R</kbd> Toggle recording (live mode)</li>
-        </ul>
-      </div>
+      {!compact ? (
+        <div className="lab-section lab-tips">
+          <h3>Controls</h3>
+          <ul>
+            <li>
+              <kbd>Space</kbd> Pause / resume
+            </li>
+            <li>
+              <kbd>1</kbd>–<kbd>4</kbd> Switch tabs
+            </li>
+            <li>
+              <kbd>R</kbd> Toggle recording
+            </li>
+          </ul>
+        </div>
+      ) : null}
     </section>
   );
 }
