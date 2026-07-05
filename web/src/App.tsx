@@ -19,7 +19,7 @@ function App() {
             <h1>Dawn</h1>
           </div>
           <p className="stage-copy">
-            A web-first strategy society where Tit-for-Tat, Grudger, Pavlov, and other classic prisoners’ dilemma agents roam, meet, and react in real time.
+            Watch classic prisoners’ dilemma strategies collide in a living top-down world — smooth enough to follow, recordable enough to study.
           </p>
         </header>
         <GameCanvas />

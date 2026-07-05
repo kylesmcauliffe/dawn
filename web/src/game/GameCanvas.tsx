@@ -19,7 +19,8 @@ export function GameCanvas() {
       parent: containerRef.current,
       backgroundColor: '#9ccf7f',
       scene: [DawnScene],
-      render: { pixelArt: false, antialias: true },
+      fps: { target: 60, forceSetTimeOut: false },
+      render: { pixelArt: false, antialias: true, roundPixels: false },
       scale: { mode: Phaser.Scale.NONE },
     });
 
